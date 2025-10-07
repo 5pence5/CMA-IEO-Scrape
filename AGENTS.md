@@ -38,3 +38,7 @@ The existing `Scrape.py` script aggregates CMA merger case documents into a sing
 - Keep requests sessions short-lived and guarded by timeouts.
 
 Following this plan should produce the required zip output with merger-specific folder structures and correctly saved PDF documents.
+
+## Living Document Expectation
+- Update this `AGENTS.md` after completing each major task or milestone so it reflects the latest repository status.
+- Record any new issues, risks, or blockers discovered during the work so future contributors can triage them quickly.
