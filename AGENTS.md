@@ -46,3 +46,10 @@ Following this plan should produce the required zip output with merger-specific 
 ## Run Log (2025-02-14)
 - Executed `python Scrape.py --out ./test_output --max-cases 3 --query-ieo-only` after installing required Python dependencies (`requests`, `beautifulsoup4`, `lxml`, `pandas`, `openpyxl`).
 - Initial run failed because `pandas` was missing (`ModuleNotFoundError`). Installing the documented dependencies resolved the issue and the script produced the CSV/XLSX manifest, ZIP archive, and per-case download folders successfully.
+
+## Run Log (2025-02-15)
+- Attempted `python Scrape.py --out ./test_output --max-cases 1 --query-ieo-only`; run failed with `ModuleNotFoundError: No module named 'pandas'`.
+- Installed the documented dependencies via `pip install requests beautifulsoup4 lxml pandas openpyxl`.
+- Re-ran `python Scrape.py --out ./test_output --max-cases 1 --query-ieo-only`; the script reported writing the manifest CSV/XLSX and `cma_initial_orders_derogs_revocations.zip`.
+- Verified artefacts with `ls test_output`, which shows `cma_initial_orders_derogs_revocations.zip`, the manifest files, and the per-case `downloads/` folder.
+- **Reminder:** the scraper reuses the `--out` directory, so remove any old artefacts with `rm -rf ./test_output` (or choose a new `--out` path) before running fresh tests to avoid confusing previous outputs with new ones.
