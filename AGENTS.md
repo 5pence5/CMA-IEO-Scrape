@@ -42,3 +42,7 @@ Following this plan should produce the required zip output with merger-specific 
 ## Living Document Expectation
 - Update this `AGENTS.md` after completing each major task or milestone so it reflects the latest repository status.
 - Record any new issues, risks, or blockers discovered during the work so future contributors can triage them quickly.
+
+## Run Log (2025-02-14)
+- Executed `python Scrape.py --out ./test_output --max-cases 3 --query-ieo-only` after installing required Python dependencies (`requests`, `beautifulsoup4`, `lxml`, `pandas`, `openpyxl`).
+- Initial run failed because `pandas` was missing (`ModuleNotFoundError`). Installing the documented dependencies resolved the issue and the script produced the CSV/XLSX manifest, ZIP archive, and per-case download folders successfully.
