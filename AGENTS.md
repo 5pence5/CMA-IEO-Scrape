@@ -4,7 +4,9 @@
 These guidelines apply to the entire repository.
 
 ## Current Status Overview
-The existing `Scrape.py` script aggregates CMA merger case documents into a single `docs/` directory and bundles them into one zip file. It does not organise downloads by merger name, nor does it separate IEOs, Derogations, Revocations, and other documents into dedicated folders. As a result, the deliverable structure described by the user cannot be produced.
+- The reworked `Scrape.py` now derives a slugged merger name for every case, writes PDFs into `output/<merger>/IEOs|Derrogations|Revocations|Other/`, and produces a manifest + zip bundle that matches the requested delivery structure.
+- Search flows for both the IEO keyword query and the all-merger index remain in place, and attachments are categorised with the extended heuristics from the last change.
+- Follow-up work should focus on improving robustness (retry/back-off) and documenting environment prerequisites for reproducible runs.
 
 ## Plan to Fix and Operationalise the Scraper
 1. **Audit & Refine Case Discovery**
@@ -15,21 +17,18 @@ The existing `Scrape.py` script aggregates CMA merger case documents into a sing
    - Parse each case page for the canonical merger title (e.g., `<h1>` tag) and derive a filesystem-safe folder name.
    - Maintain a mapping between case URLs and merger names for later use when downloading documents.
 
-3. **Improve Document Classification**
-   - Extend `classify_type` with a deterministic fallback category (`Other`) for items that do not match IEO, Derogation, or Revocation rules but should still be archived.
-   - Capture the published date and any document metadata that can help confirm classification.
+3. **Improve Document Classification** *(DONE in last commit)*
+   - Added deterministic `Other` fallback and captures link text dates for the manifest.
 
-4. **Rework Download & Storage Layout**
-   - When fetching each PDF, save it under `output/<merger_name>/<category>/` using a consistent filename (e.g., `{date}_{slugified_title}.pdf`).
-   - Keep a manifest (DataFrame) that records the final archive path in addition to source metadata.
+4. **Rework Download & Storage Layout** *(DONE in last commit)*
+   - PDFs are now saved beneath `output/<merger_name>/<category>/` with slugged filenames and tracked in a manifest.
 
-5. **Build Requested Zip Structure**
-   - After downloads finish, create a zip archive where the root is the merger name and each merger contains subfolders `IEOs`, `Derrogations`, `Revocations`, and `Other` populated with the corresponding PDFs.
-   - Include the manifest (CSV/XLSX) at the top level of the zip for reference.
+5. **Build Requested Zip Structure** *(DONE in last commit)*
+   - A merger-structured zip including the manifest is produced after downloads complete.
 
 6. **Operational Concerns**
    - Respect polite crawling practices (rate limiting, custom user agent).
-   - Add logging and error handling so failures are visible but do not halt the entire run.
+   - Add logging, retries, and error handling so failures are visible but do not halt the entire run.
    - Document usage instructions and prerequisites in `README` or script docstring.
 
 ## Coding Conventions
