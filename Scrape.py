@@ -249,6 +249,7 @@ def download_documents(
             downloaded.append(record)
         except Exception as exc:
             record["local_path"] = ""
+            downloaded.append(record)
             print(f"[warn] download failed {url}: {exc}", file=sys.stderr)
         time.sleep(0.2)
 
