@@ -52,10 +52,28 @@ class DummyDataFrame:
             )
         path.write_text("\n".join(lines), encoding="utf-8")
 
+    @property
+    def columns(self):
+        return list(self._rows[0].keys()) if self._rows else []
 
-dummy_pandas = types.ModuleType("pandas")
-dummy_pandas.DataFrame = DummyDataFrame
-sys.modules.setdefault("pandas", dummy_pandas)
+    @property
+    def empty(self):
+        return not self._rows
+
+
+try:  # pragma: no cover - exercised when pandas is missing
+    import pandas  # noqa: F401
+except ModuleNotFoundError:  # pragma: no cover
+    dummy_pandas = types.ModuleType("pandas")
+    dummy_pandas.DataFrame = DummyDataFrame
+
+    def _read_csv(path, encoding="utf-8"):
+        with Path(path).open("r", newline="", encoding=encoding) as fh:
+            rows = list(csv.DictReader(fh))
+        return DummyDataFrame(rows)
+
+    dummy_pandas.read_csv = _read_csv
+    sys.modules.setdefault("pandas", dummy_pandas)
 
 
 class _DummySession:
