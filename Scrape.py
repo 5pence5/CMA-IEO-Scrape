@@ -352,9 +352,9 @@ def main():
     if args.all_merger_cases_with_outcomes:
         # Use the outcome types from the provided URL
         outcome_types = [
-            "markets-phase-1-no-enforcement-action",
-            "markets-phase-1-undertakings-in-lieu-of-reference",
-            "markets-phase-1-referral",
+            "mergers-phase-1-no-enforcement-action",
+            "mergers-phase-1-undertakings-in-lieu-of-reference",
+            "mergers-phase-1-referral",
             "mergers-phase-1-clearance",
             "mergers-phase-1-clearance-with-undertakings-in-lieu",
             "mergers-phase-1-referral",
