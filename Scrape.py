@@ -18,7 +18,7 @@ import time
 import zipfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlsplit
 
 import pandas as pd
 import requests
@@ -441,7 +441,8 @@ def parse_case_for_docs(session, case: Dict[str, str]) -> List[Dict[str, str]]:
         # /government/uploads/ served from www.gov.uk and legacy hosts).
         if not is_govuk_asset_url(href):
             continue
-        if not href.lower().endswith(".pdf"):
+        path = urlsplit(href).path.lower()
+        if not path.endswith(".pdf"):
             # Ignore non-PDF attachments.
             continue
         doc_type = classify_document(text, href)
