@@ -4,9 +4,10 @@
 These guidelines apply to the entire repository.
 
 ## Current Status Overview
-- The reworked `Scrape.py` now derives a slugged merger name for every case, writes PDFs into `output/<merger>/IEOs|Derrogations|Revocations|Other/`, and produces a manifest + zip bundle that matches the requested delivery structure.
-- Search flows for both the IEO keyword query and the all-merger index remain in place, and attachments are categorised with the extended heuristics from the last change.
+- The reworked `Scrape.py` now derives a slugged merger name for every case, writes PDFs into `output/<merger>/IEOs|Derrogations|Revocations|Hold separate manager|Monitoring trustee|Commencement notice|Decision|Other/`, and produces a manifest + zip bundle that matches the requested delivery structure.
 - **Fixed (2025-02-15)**: Corrected bug where failed downloads were not tracked, causing ZIP to only contain index when all downloads failed. Now failed downloads appear in the manifest for visibility.
+- Added `--only-derogations` flag to keep output focused on derogation documents when desired.
+- Added `--only-full-text-decisions` flag plus an outcome-filtered case discovery mode to capture every published full text decision.
 - Follow-up work should focus on improving robustness (retry/back-off) and documenting environment prerequisites for reproducible runs.
 
 ## Plan to Fix and Operationalise the Scraper
@@ -20,6 +21,7 @@ These guidelines apply to the entire repository.
 
 3. **Improve Document Classification** *(DONE in last commit)*
    - Added deterministic `Other` fallback and captures link text dates for the manifest.
+   - IEO-only mode now queries GOV.UK for the specific phrase "initial enforcement order" to reduce noise from other documents.
 
 4. **Rework Download & Storage Layout** *(DONE in last commit)*
    - PDFs are now saved beneath `output/<merger_name>/<category>/` with slugged filenames and tracked in a manifest.
@@ -89,3 +91,28 @@ Verified with simulated scenarios:
 - All downloads succeed → all PDFs in ZIP ✓
 - Some downloads fail → successful PDFs in ZIP, failed ones in manifest only ✓
 - All downloads fail → ZIP has index only, but manifest shows all attempted downloads ✓
+## Run Log (2025-10-07)
+- Added dedicated classification buckets for Hold separate manager, Monitoring trustee, Commencement notice, and Decision documents so they materialise as separate folders in both the on-disk layout and the ZIP bundle.
+- Installed the optional `lxml` dependency to eliminate BeautifulSoup parser warnings and re-ran `python Scrape.py --out ./test_output --max-cases 12 --query-ieo-only` on a clean output directory.
+- Zip bundle now includes the new category folders with the downloaded PDFs alongside the refreshed CSV/XLSX manifest.
+- Restricted IEO-only search to the exact phrase "initial enforcement order" and validated with `python3 Scrape.py --out ./ieo_output --query-ieo-only`.
+- Added `--only-derogations` flag and verified `python3 Scrape.py --out ./ieo_derogs_output --query-ieo-only --only-derogations` produces an index/ZIP containing only derogation PDFs.
+
+## Run Log (2025-10-08)
+- Introduced `--all-merger-cases-with-outcomes` to drive discovery from the GOV.UK finder using the full set of merger outcome filters, and added `--only-full-text-decisions` to restrict downloads to "Full text decision" PDFs.
+- Confirmed per-row `not_downloaded` flags are populated in the index so missed documents are easy to audit.
+- Ran `python3 Scrape.py --out ./fulltext_decisions_outcomes --all-merger-cases-with-outcomes --only-full-text-decisions` to exercise the new mode across the full dataset (≈1.8k decision PDFs).
+- Smoke-tested with `python3 Scrape.py --out ./smoke_fulltext --all-merger-cases-with-outcomes --only-full-text-decisions --max-cases 3` to ensure small-batch operation still succeeds.
+
+## Run Log (2025-10-07)
+- Added dedicated classification buckets for Hold separate manager, Monitoring trustee, Commencement notice, and Decision documents so they materialise as separate folders in both the on-disk layout and the ZIP bundle.
+- Installed the optional `lxml` dependency to eliminate BeautifulSoup parser warnings and re-ran `python Scrape.py --out ./test_output --max-cases 12 --query-ieo-only` on a clean output directory.
+- Zip bundle now includes the new category folders with the downloaded PDFs alongside the refreshed CSV/XLSX manifest.
+- Restricted IEO-only search to the exact phrase "initial enforcement order" and validated with `python3 Scrape.py --out ./ieo_output --query-ieo-only`.
+- Added `--only-derogations` flag and verified `python3 Scrape.py --out ./ieo_derogs_output --query-ieo-only --only-derogations` produces an index/ZIP containing only derogation PDFs.
+
+## Run Log (2025-10-08)
+- Introduced `--all-merger-cases-with-outcomes` to drive discovery from the GOV.UK finder using the full set of merger outcome filters, and added `--only-full-text-decisions` to restrict downloads to "Full text decision" PDFs.
+- Confirmed per-row `not_downloaded` flags are populated in the index so missed documents are easy to audit.
+- Ran `python3 Scrape.py --out ./fulltext_decisions_outcomes --all-merger-cases-with-outcomes --only-full-text-decisions` to exercise the new mode across the full dataset (≈1.8k decision PDFs).
+- Smoke-tested with `python3 Scrape.py --out ./smoke_fulltext --all-merger-cases-with-outcomes --only-full-text-decisions --max-cases 3` to ensure small-batch operation still succeeds.
