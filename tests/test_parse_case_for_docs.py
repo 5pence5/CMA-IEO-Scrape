@@ -23,6 +23,19 @@ class _DummyDataFrame:
 
 
 dummy_pandas.DataFrame = _DummyDataFrame
+
+
+class _DummySeries:
+    def __init__(self, *args, **kwargs):
+        self._data = args[0] if args else []
+        self.index = kwargs.get("index")
+        self.dtype = kwargs.get("dtype")
+
+    def __bool__(self):
+        return bool(self._data)
+
+
+dummy_pandas.Series = _DummySeries
 sys.modules.setdefault("pandas", dummy_pandas)
 
 
@@ -100,3 +113,26 @@ def test_is_govuk_asset_url_accepts_mirrors():
     assert not is_govuk_asset_url("https://www.gov.uk/government/news/file.pdf")
     assert not is_govuk_asset_url("https://example.com/file.pdf")
     assert not is_govuk_asset_url("https://malicious.publishing.service.gov.uk/file.pdf")
+
+
+def test_parse_case_includes_pdf_with_query_and_fragment():
+    html = """
+    <html>
+      <body>
+        <main>
+          <a href="https://assets.digital.cabinet-office.gov.uk/government/uploads/system/uploads/attachment_data/file/123456/legacy-derogation.pdf?download=1#section">
+            Legacy derogation (12.10.2015)
+          </a>
+        </main>
+      </body>
+    </html>
+    """
+    session = FakeSession(html)
+    case = {"link": "/cma-cases/example-case", "title": "Example case"}
+
+    docs = parse_case_for_docs(session, case)
+
+    assert docs, "Expected at least one document to be captured"
+    assert any(
+        doc["doc_url"].endswith("legacy-derogation.pdf?download=1#section") for doc in docs
+    ), "Document with query/fragment should be captured"
