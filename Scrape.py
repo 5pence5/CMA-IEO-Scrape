@@ -268,6 +268,7 @@ def parse_case_for_docs(session, case: Dict[str, str]) -> List[Dict[str, str]]:
     soup = BeautifulSoup(resp.text, BS_PARSER)
 
     out = []
+    seen_urls = set()
     for a in soup.select("a"):
         text = a.get_text(" ", strip=True)
         href = ensure_absolute_asset_url(url, a.get("href", ""))
@@ -278,6 +279,9 @@ def parse_case_for_docs(session, case: Dict[str, str]) -> List[Dict[str, str]]:
         if not href.lower().endswith(".pdf"):
             # Ignore non-PDF attachments.
             continue
+        if href in seen_urls:
+            continue
+        seen_urls.add(href)
         doc_type = classify_type(text, href)
         if not doc_type:
             doc_type = "Other"
