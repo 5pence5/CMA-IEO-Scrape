@@ -57,6 +57,45 @@ TYPE_RULES = [
     (re.compile(r"decision", re.I), "Decision"),
 ]
 
+FULL_TEXT_DECISION_VARIANTS = (
+    "full text decision",
+    "full text decisions",
+    "full decision text",
+    "full decision texts",
+)
+
+FULL_TEXT_DECISION_REGEXES = (
+    re.compile(r"\bfull text(?: \w+){0,4} decision(?:s)?\b"),
+    re.compile(r"\bfull decision(?: \w+){0,3} text(?:s)?\b"),
+    re.compile(r"\bdecision(?: \w+){0,3} full(?: \w+){0,3} text(?:s)?\b"),
+)
+
+
+def normalise_full_text_title(title: str) -> str:
+    """Lowercase and strip punctuation/hyphenation noise from a title."""
+
+    if not title:
+        return ""
+    lowered = title.lower()
+    # Collapse punctuation/hyphenation and multiple whitespace to single spaces.
+    lowered = re.sub(r"[^a-z0-9]+", " ", lowered)
+    return re.sub(r"\s+", " ", lowered).strip()
+
+
+def is_full_text_decision_title(title: str) -> bool:
+    """Return True when the provided title matches a full-text decision variant."""
+
+    normalised = normalise_full_text_title(title)
+    if not normalised:
+        return False
+    if any(variant in normalised for variant in FULL_TEXT_DECISION_VARIANTS):
+        return True
+    for pattern in FULL_TEXT_DECISION_REGEXES:
+        if pattern.search(normalised):
+            return True
+    return False
+
+
 CATEGORY_TO_FOLDER = {
     "Initial enforcement order": "IEOs",
     "Derogation": "Derrogations",
@@ -445,8 +484,7 @@ def main():
         if args.only_full_text_decisions:
             if r.get("doc_type") != "Decision":
                 continue
-            title = r.get("doc_title", "").lower()
-            if "full text decision" not in title:
+            if not is_full_text_decision_title(r.get("doc_title", "")):
                 continue
         unique.append(r)
 
