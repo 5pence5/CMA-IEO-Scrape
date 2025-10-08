@@ -17,7 +17,7 @@ import sys
 import time
 import zipfile
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 from urllib.parse import urljoin, urlparse
 
 import pandas as pd
@@ -46,6 +46,8 @@ IEO_KEYWORDS = [
 
 # Heuristics for classifying attachment type from link text
 TYPE_RULES = [
+    (re.compile(r"\bfinal report\b", re.I), "Final report"),
+    (re.compile(r"\bprovisional findings? report\b", re.I), "Provisional findings"),
     (re.compile(r"\binitial enforcement order\b", re.I), "Initial enforcement order"),
     (re.compile(r"\bieo\b", re.I), "Initial enforcement order"),
     (re.compile(r"\brevocation\b", re.I), "Revocation order"),
@@ -56,6 +58,91 @@ TYPE_RULES = [
     (re.compile(r"commencement", re.I), "Commencement notice"),
     (re.compile(r"decision", re.I), "Decision"),
 ]
+
+
+ALWAYS_INCLUDE_TYPES = {
+    "Initial enforcement order",
+    "Derogation",
+    "Revocation order",
+    "Hold separate manager",
+    "Monitoring trustee",
+    "Commencement notice",
+}
+
+
+SINGLE_DOC_PROCEDURAL_TYPES = {
+    "Derogation",
+    "Initial enforcement order",
+    "Revocation order",
+    "Commencement notice",
+}
+
+
+SUBSTANTIVE_DOC_TYPES = {
+    "Decision",
+    "Final report",
+    "Provisional findings",
+}
+
+
+SUMMARY_TITLE_PATTERNS = [
+    re.compile(r"\bsummary of\b", re.I),
+    re.compile(r"\bsummary\b.*\breport\b", re.I),
+    re.compile(r"\bexecutive summary\b", re.I),
+    re.compile(r"\bnews release\b", re.I),
+]
+
+
+PROCEDURAL_DECISION_PATTERNS = [
+    re.compile(r"\buil acceptance\b", re.I),
+    re.compile(r"\bdecision to refer\b", re.I),
+    re.compile(r"\breference decision\b", re.I),
+    re.compile(r"\bsummary of.*decision\b", re.I),
+    re.compile(r"\bpenalty notice\b", re.I),
+    re.compile(r"\bnotice of\b", re.I),
+]
+
+
+SIMPLE_PDF_DOMAINS = (
+    "assets.digital.cabinet-office.gov.uk",
+    "assets.publishing.service.gov.uk",
+)
+
+
+def is_summary_document(title: str) -> bool:
+    """Return True when the provided title looks like a summary variant."""
+
+    if not title:
+        return False
+
+    return any(pattern.search(title) for pattern in SUMMARY_TITLE_PATTERNS)
+
+
+def is_procedural_decision(title: str) -> bool:
+    """Return True when the title appears to describe a procedural decision."""
+
+    if not title:
+        return False
+
+    return any(pattern.search(title) for pattern in PROCEDURAL_DECISION_PATTERNS)
+
+
+def is_simple_filename_pdf(title: str, url: Optional[str] = None) -> bool:
+    """Detect GOV.UK PDFs whose titles are bare filenames (e.g. 2Sisters.pdf)."""
+
+    if not title:
+        return False
+
+    if not re.fullmatch(r"[A-Za-z0-9\-_]+\.pdf", title.strip(), flags=re.I):
+        return False
+
+    if not url:
+        return True
+
+    parsed = urlparse(url)
+    host = parsed.netloc.lower() if parsed.netloc else ""
+    return any(host.endswith(domain) for domain in SIMPLE_PDF_DOMAINS)
+
 
 FULL_TEXT_DECISION_VARIANTS = (
     "full text decision",
@@ -96,6 +183,68 @@ def is_full_text_decision_title(title: str) -> bool:
     return False
 
 
+def should_scrape_document(case_docs: pd.DataFrame) -> pd.Series:
+    """Return a boolean series indicating which documents to scrape for a case."""
+
+    if case_docs.empty:
+        return pd.Series(dtype=bool)
+
+    should_scrape = pd.Series(False, index=case_docs.index, dtype=bool)
+
+    for idx, doc in case_docs.iterrows():
+        doc_type = (doc.get("doc_type") or "").strip()
+        title = doc.get("doc_title", "") or ""
+        if doc_type in ALWAYS_INCLUDE_TYPES and not is_summary_document(title):
+            should_scrape.at[idx] = True
+
+    if len(case_docs) == 1:
+        idx = case_docs.index[0]
+        if not should_scrape.get(idx, False):
+            doc = case_docs.iloc[0]
+            title = doc.get("doc_title", "") or ""
+            doc_type = (doc.get("doc_type") or "").strip()
+            if not is_summary_document(title):
+                if doc_type not in SINGLE_DOC_PROCEDURAL_TYPES:
+                    should_scrape.at[idx] = True
+        return should_scrape
+
+    has_final_report = False
+    for idx, doc in case_docs.iterrows():
+        doc_type = (doc.get("doc_type") or "").strip()
+        title = doc.get("doc_title", "") or ""
+        if doc_type == "Final report" and not is_summary_document(title):
+            should_scrape.at[idx] = True
+            has_final_report = True
+
+    if not has_final_report:
+        for idx, doc in case_docs.iterrows():
+            doc_type = (doc.get("doc_type") or "").strip()
+            title = doc.get("doc_title", "") or ""
+            if doc_type == "Provisional findings":
+                if re.search(r"\bprovisional findings? report\b", title, re.I):
+                    if not is_summary_document(title):
+                        should_scrape.at[idx] = True
+                        break
+
+    for idx, doc in case_docs.iterrows():
+        doc_type = (doc.get("doc_type") or "").strip()
+        title = doc.get("doc_title", "") or ""
+        if doc_type == "Decision":
+            if not is_procedural_decision(title) and not is_summary_document(title):
+                if is_full_text_decision_title(title):
+                    should_scrape.at[idx] = True
+
+    for idx, doc in case_docs.iterrows():
+        doc_type = (doc.get("doc_type") or "").strip()
+        title = doc.get("doc_title", "") or ""
+        if doc_type == "Simple PDF" and not is_summary_document(title):
+            substantive_count = int(case_docs["doc_type"].isin(SUBSTANTIVE_DOC_TYPES).sum())
+            if substantive_count == 0:
+                should_scrape.at[idx] = True
+
+    return should_scrape
+
+
 CATEGORY_TO_FOLDER = {
     "Initial enforcement order": "IEOs",
     "Derogation": "Derrogations",
@@ -104,6 +253,9 @@ CATEGORY_TO_FOLDER = {
     "Monitoring trustee": "Monitoring trustee",
     "Commencement notice": "Commencement notice",
     "Decision": "Decision",
+    "Final report": "Final report",
+    "Provisional findings": "Provisional findings",
+    "Simple PDF": "Simple PDF",
     "Other": "Other",
 }
 
@@ -123,43 +275,45 @@ INDEX_COLUMNS = [
 ]
 
 
-def classify_type(text: str, href: str) -> str:
-    """Return the best-guess document category for an attachment."""
+def classify_document(title: str, url: Optional[str] = None) -> str:
+    """Return the best-guess category for a document title/URL combination."""
 
-    text = text or ""
-    href = href or ""
+    title = title or ""
+    url = url or ""
+
+    if is_simple_filename_pdf(title, url):
+        return "Simple PDF"
+
     for rx, label in TYPE_RULES:
-        if rx.search(text):
+        if rx.search(title):
             return label
 
-    # Fall back to hints in the URL itself – many attachments include the type there.
-    href_lower = href.lower()
-    if any(k in href_lower for k in ("initial-enforcement-order", "initial_enforcement_order", "ieo")):
+    url_lower = url.lower()
+    if any(k in url_lower for k in ("initial-enforcement-order", "initial_enforcement_order", "ieo")):
         return "Initial enforcement order"
-    if any(k in href_lower for k in ("derogation", "consent")):
+    if any(k in url_lower for k in ("derogation", "consent")):
         return "Derogation"
-    if "revocation" in href_lower:
+    if "revocation" in url_lower:
         return "Revocation order"
-    if "hold" in href_lower and "separate" in href_lower and "manager" in href_lower:
+    if "hold" in url_lower and "separate" in url_lower and "manager" in url_lower:
         return "Hold separate manager"
-    if "monitoring" in href_lower and "trustee" in href_lower:
+    if "monitoring" in url_lower and "trustee" in url_lower:
         return "Monitoring trustee"
-    if "commencement" in href_lower and "notice" in href_lower:
+    if "commencement" in url_lower and "notice" in url_lower:
         return "Commencement notice"
-    if "decision" in href_lower:
+    if "decision" in url_lower:
         return "Decision"
 
-    # As a final heuristic, sometimes the link text just references "order" alongside IEO keywords.
-    text_lower = text.lower()
-    if "order" in text_lower and "enforcement" in text_lower:
+    title_lower = title.lower()
+    if "order" in title_lower and "enforcement" in title_lower:
         return "Initial enforcement order"
-    if "hold" in text_lower and "separate" in text_lower and "manager" in text_lower:
+    if "hold" in title_lower and "separate" in title_lower and "manager" in title_lower:
         return "Hold separate manager"
-    if "monitoring" in text_lower and "trustee" in text_lower:
+    if "monitoring" in title_lower and "trustee" in title_lower:
         return "Monitoring trustee"
-    if "commencement" in text_lower and "notice" in text_lower:
+    if "commencement" in title_lower and "notice" in title_lower:
         return "Commencement notice"
-    if "decision" in text_lower:
+    if "decision" in title_lower:
         return "Decision"
 
     return "Other"
@@ -290,7 +444,7 @@ def parse_case_for_docs(session, case: Dict[str, str]) -> List[Dict[str, str]]:
         if not href.lower().endswith(".pdf"):
             # Ignore non-PDF attachments.
             continue
-        doc_type = classify_type(text, href)
+        doc_type = classify_document(text, href)
         if not doc_type:
             doc_type = "Other"
         # Try to pick up the trailing (dd.mm.yy) GOV.UK convention shown next to links
@@ -487,37 +641,71 @@ def main():
         time.sleep(0.25)
 
 
-    # De-duplicate docs by URL and apply filters
-    seen, unique = set(), []
+    # De-duplicate docs by URL
+    seen, deduped = set(), []
     for r in records:
         u = r["doc_url"]
         if u in seen:
             continue
         seen.add(u)
-        # Derogation filter
-        if args.only_derogations and r.get("doc_type") != "Derogation":
+        deduped.append(r)
+
+    if deduped:
+        docs_df = pd.DataFrame(deduped)
+        try:
+            docs_df["doc_type"] = docs_df.apply(
+                lambda row: classify_document(row.get("doc_title", ""), row.get("doc_url", "")),
+                axis=1,
+            )
+        except TypeError:
+            docs_df["doc_type"] = [
+                classify_document(row.get("doc_title", ""), row.get("doc_url", ""))
+                for _, row in docs_df.iterrows()
+            ]
+
+        docs_df["case_group"] = (
+            docs_df["case_path"].fillna(docs_df["case_title"]).fillna("")
+        )
+
+        docs_df["should_scrape"] = False
+        for _, case_docs in docs_df.groupby("case_group"):
+            flags = should_scrape_document(case_docs)
+            if not flags.empty:
+                docs_df.loc[flags.index, "should_scrape"] = flags
+
+        docs_df = docs_df[docs_df["should_scrape"]]
+        selected_records = docs_df.drop(columns=["should_scrape", "case_group"], errors="ignore").to_dict(
+            "records"
+        )
+    else:
+        selected_records = []
+
+    filtered_records: List[Dict[str, str]] = []
+    for record in selected_records:
+        if args.only_derogations and record.get("doc_type") != "Derogation":
             continue
-        # Full text decision filter
         if args.only_full_text_decisions:
-            if r.get("doc_type") != "Decision":
+            if record.get("doc_type") != "Decision":
                 continue
-            if not is_full_text_decision_title(r.get("doc_title", "")):
+            if not is_full_text_decision_title(record.get("doc_title", "")):
                 continue
-        unique.append(r)
+        filtered_records.append(record)
 
     # Download (unless explicitly skipped)
     if args.skip_downloads:
-        print(f"[info] Skipping downloads; discovered {len(unique)} documents across {len(cases)} cases.")
+        print(
+            f"[info] Skipping downloads; discovered {len(filtered_records)} documents across {len(cases)} cases."
+        )
         downloaded = []
     else:
-        downloaded = download_documents(s, unique, docs_dir)
+        downloaded = download_documents(s, filtered_records, docs_dir)
 
     # Track files not downloaded (failed downloads)
-    not_downloaded = [r for r in unique if not r.get("local_path")]
+    not_downloaded = [r for r in filtered_records if not r.get("local_path")]
 
     # Index: include all expected files, with not_downloaded column per row
     all_rows = []
-    for r in unique:
+    for r in filtered_records:
         row = {
             "case_title": r.get("case_title", ""),
             "case_url": r.get("case_url", ""),
