@@ -39,7 +39,7 @@ The script creates:
 3. **ZIP Bundle**: `cma_initial_orders_derogs_revocations.zip`
    - Contains index files (CSV & XLSX)
    - Contains PDFs organized by: `{Case}/{Category}/{filename}.pdf`
-     - Categories: `IEOs`, `Derrogations`, `Revocations`, `Other`
+    - Categories: `IEOs`, `Derogations`, `Revocations`, `Other`
 
 4. **Downloads folder**: `downloads/` (intermediate storage for PDFs)
 

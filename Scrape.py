@@ -247,7 +247,7 @@ def should_scrape_document(case_docs: pd.DataFrame) -> pd.Series:
 
 CATEGORY_TO_FOLDER = {
     "Initial enforcement order": "IEOs",
-    "Derogation": "Derrogations",
+    "Derogation": "Derogations",
     "Revocation order": "Revocations",
     "Hold separate manager": "Hold separate manager",
     "Monitoring trustee": "Monitoring trustee",
