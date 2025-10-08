@@ -8,6 +8,7 @@ These guidelines apply to the entire repository.
 - **Fixed (2025-02-15)**: Corrected bug where failed downloads were not tracked, causing ZIP to only contain index when all downloads failed. Now failed downloads appear in the manifest for visibility.
 - Added `--only-derogations` flag to keep output focused on derogation documents when desired.
 - Added `--only-full-text-decisions` flag plus an outcome-filtered case discovery mode to capture every published full text decision.
+- Added `--skip-downloads` flag so large manifest/log runs can be produced without fetching any documents.
 - Follow-up work should focus on improving robustness (retry/back-off) and documenting environment prerequisites for reproducible runs.
 
 ## Plan to Fix and Operationalise the Scraper
@@ -103,6 +104,7 @@ Verified with simulated scenarios:
 - Confirmed per-row `not_downloaded` flags are populated in the index so missed documents are easy to audit.
 - Ran `python3 Scrape.py --out ./fulltext_decisions_outcomes --all-merger-cases-with-outcomes --only-full-text-decisions` to exercise the new mode across the full dataset (≈1.8k decision PDFs).
 - Smoke-tested with `python3 Scrape.py --out ./smoke_fulltext --all-merger-cases-with-outcomes --only-full-text-decisions --max-cases 3` to ensure small-batch operation still succeeds.
+- Verified manifest-only workflows by running `python3 Scrape.py --out ./fulltext_log --all-merger-cases-with-outcomes --only-full-text-decisions --skip-downloads` (646 decision entries across 1,878 cases) and `python3 Scrape.py --out ./all_docs_log --all-merger-cases-with-outcomes --skip-downloads` (7,441 documents total) to support gap analysis without downloading PDFs.
 
 ## Run Log (2025-10-07)
 - Added dedicated classification buckets for Hold separate manager, Monitoring trustee, Commencement notice, and Decision documents so they materialise as separate folders in both the on-disk layout and the ZIP bundle.
