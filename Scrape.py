@@ -281,9 +281,6 @@ def classify_document(title: str, url: Optional[str] = None) -> str:
     title = title or ""
     url = url or ""
 
-    if is_simple_filename_pdf(title, url):
-        return "Simple PDF"
-
     for rx, label in TYPE_RULES:
         if rx.search(title):
             return label
@@ -315,6 +312,12 @@ def classify_document(title: str, url: Optional[str] = None) -> str:
         return "Commencement notice"
     if "decision" in title_lower:
         return "Decision"
+
+    if is_simple_filename_pdf(title, url):
+        # Bare-filename PDFs frequently include enforcement orders or derogations.
+        # Let the above heuristics run first so those documents retain their
+        # specific category before falling back to the simple-PDF bucket.
+        return "Simple PDF"
 
     return "Other"
 
