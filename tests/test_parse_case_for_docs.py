@@ -25,7 +25,19 @@ class _DummyDataFrame:
 dummy_pandas.DataFrame = _DummyDataFrame
 sys.modules.setdefault("pandas", dummy_pandas)
 
+
+class _DummySession:
+    def __init__(self, *args, **kwargs):
+        raise RuntimeError("Dummy requests.Session should be monkeypatched in tests")
+
+
+dummy_requests = types.ModuleType("requests")
+dummy_requests.Session = _DummySession
+sys.modules.setdefault("requests", dummy_requests)
+
 import pytest
+
+pytest.importorskip("bs4")
 
 from Scrape import BASE, is_govuk_asset_url, parse_case_for_docs
 

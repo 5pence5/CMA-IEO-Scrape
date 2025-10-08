@@ -10,6 +10,9 @@ import zipfile
 import pytest
 
 
+pytest.importorskip("bs4")
+
+
 class DummyDataFrame:
     def __init__(self, rows):
         self._rows = list(rows)
@@ -63,17 +66,6 @@ class _DummySession:
 dummy_requests = types.ModuleType("requests")
 dummy_requests.Session = _DummySession
 sys.modules.setdefault("requests", dummy_requests)
-
-
-class _DummyBeautifulSoup:
-    def __init__(self, *args, **kwargs):
-        pass
-
-
-dummy_bs4 = types.ModuleType("bs4")
-dummy_bs4.BeautifulSoup = _DummyBeautifulSoup
-dummy_bs4.FeatureNotFound = RuntimeError
-sys.modules.setdefault("bs4", dummy_bs4)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
