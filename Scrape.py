@@ -22,7 +22,17 @@ from urllib.parse import urljoin
 
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, FeatureNotFound
+
+try:
+    BeautifulSoup("", "lxml")
+    BS_PARSER = "lxml"
+except FeatureNotFound:
+    BS_PARSER = "html.parser"
+    print(
+        "[info] Optional dependency 'lxml' not found; falling back to Python's built-in HTML parser.",
+        file=sys.stderr,
+    )
 
 BASE = "https://www.gov.uk"
 SEARCH_API = f"{BASE}/api/search.json"
@@ -32,9 +42,6 @@ CMA_ORG_SLUG = "competition-and-markets-authority"
 CMA_CASE_FORMAT = "cma_case"
 IEO_KEYWORDS = [
     "initial enforcement order",
-    "revocation order",
-    "derogation",
-    "consent granted",  # sometimes derogations are phrased as consents
 ]
 
 # Heuristics for classifying attachment type from link text
@@ -44,14 +51,25 @@ TYPE_RULES = [
     (re.compile(r"\brevocation\b", re.I), "Revocation order"),
     (re.compile(r"\bderogation\b", re.I), "Derogation"),
     (re.compile(r"\bconsent\b", re.I), "Derogation"),
+    (re.compile(r"hold[-\s]?separate manager", re.I), "Hold separate manager"),
+    (re.compile(r"monitoring trustee", re.I), "Monitoring trustee"),
+    (re.compile(r"commencement", re.I), "Commencement notice"),
+    (re.compile(r"decision", re.I), "Decision"),
 ]
 
 CATEGORY_TO_FOLDER = {
     "Initial enforcement order": "IEOs",
     "Derogation": "Derrogations",
     "Revocation order": "Revocations",
+    "Hold separate manager": "Hold separate manager",
+    "Monitoring trustee": "Monitoring trustee",
+    "Commencement notice": "Commencement notice",
+    "Decision": "Decision",
     "Other": "Other",
 }
+
+MAX_CASE_DIR_LEN = 80
+MAX_FILE_STEM_LEN = 96
 
 
 def classify_type(text: str, href: str) -> str:
@@ -71,11 +89,27 @@ def classify_type(text: str, href: str) -> str:
         return "Derogation"
     if "revocation" in href_lower:
         return "Revocation order"
+    if "hold" in href_lower and "separate" in href_lower and "manager" in href_lower:
+        return "Hold separate manager"
+    if "monitoring" in href_lower and "trustee" in href_lower:
+        return "Monitoring trustee"
+    if "commencement" in href_lower and "notice" in href_lower:
+        return "Commencement notice"
+    if "decision" in href_lower:
+        return "Decision"
 
     # As a final heuristic, sometimes the link text just references "order" alongside IEO keywords.
     text_lower = text.lower()
     if "order" in text_lower and "enforcement" in text_lower:
         return "Initial enforcement order"
+    if "hold" in text_lower and "separate" in text_lower and "manager" in text_lower:
+        return "Hold separate manager"
+    if "monitoring" in text_lower and "trustee" in text_lower:
+        return "Monitoring trustee"
+    if "commencement" in text_lower and "notice" in text_lower:
+        return "Commencement notice"
+    if "decision" in text_lower:
+        return "Decision"
 
     return "Other"
 
@@ -104,21 +138,23 @@ def search_cases_ieo_only(session):
             unique.append(it)
     return unique
 
-def search_all_merger_cases(session):
+def search_all_merger_cases(session, outcome_types=None):
     """
-    Broader: use the finder page HTML with the same filter the UI uses:
-    /cma-cases?case_type[]=mergers
-    Then paginate (?page=2,3,...) and collect case links.
+    Use the finder page HTML with filters for case_type and outcome_type, then paginate and collect case links.
     """
     links = []
     page = 1
+    # Build the filter string
+    base_url = f"{BASE}/cma-cases?case_type[]=mergers"
+    if outcome_types:
+        for ot in outcome_types:
+            base_url += f"&outcome_type[]={ot}"
     while True:
-        url = f"{BASE}/cma-cases?case_type[]=mergers&page={page}"
+        url = f"{base_url}&page={page}"
         resp = session.get(url, headers=HEADERS, timeout=60)
         if resp.status_code != 200:
             break
-        soup = BeautifulSoup(resp.text, "lxml")
-        # result links are anchors under .gem-c-document-list__item or similar
+        soup = BeautifulSoup(resp.text, BS_PARSER)
         for a in soup.select("a.gem-c-document-list__item-title, .gem-c-document-list a"):
             href = a.get("href", "")
             if href.startswith("/cma-cases/"):
@@ -161,7 +197,7 @@ def parse_case_for_docs(session, case: Dict[str, str]) -> List[Dict[str, str]]:
     url = urljoin(BASE, case_path)
     resp = session.get(url, headers=HEADERS, timeout=60)
     resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "lxml")
+    soup = BeautifulSoup(resp.text, BS_PARSER)
 
     out = []
     for a in soup.select("a"):
@@ -209,6 +245,32 @@ def safe_folder_name(value: str) -> str:
     return value or "case"
 
 
+def truncate_component(value: str, max_len: int) -> str:
+    if len(value) <= max_len:
+        return value
+    return value[:max_len].rstrip("-_ ") or value[:max_len]
+
+
+def build_case_dirs(case_title: str, case_path: str) -> Dict[str, str]:
+    """Return local and zip directory names for a case."""
+    case_title = case_title or case_path or "case"
+    case_slug = slugify(case_path or case_title)
+    case_slug = truncate_component(case_slug, MAX_CASE_DIR_LEN)
+
+    pretty = safe_folder_name(case_title)
+    pretty = truncate_component(pretty, MAX_CASE_DIR_LEN)
+
+    local = pretty
+    if case_slug and case_slug not in local:
+        local = truncate_component(f"{local}__{case_slug}", MAX_CASE_DIR_LEN * 2)
+
+    return {
+        "local": local or case_slug or "case",
+        "zip": case_slug or local or "case",
+        "slug": case_slug or "case",
+    }
+
+
 def download_documents(
     session: requests.Session, docs: Iterable[Dict[str, str]], base_dir: Path
 ) -> List[Dict[str, str]]:
@@ -219,21 +281,21 @@ def download_documents(
         url = record["doc_url"]
         try:
             case_title = record.get("case_title") or record.get("case_path", "case")
-            case_folder = safe_folder_name(case_title)
-            case_slug = slugify(record.get("case_path", "case"))
-            if case_slug and case_slug not in case_folder:
-                case_folder = safe_folder_name(f"{case_folder}__{case_slug}")
-            case_dir = base_dir / case_folder
+            dirs = build_case_dirs(case_title, record.get("case_path", "case"))
+            case_dir = base_dir / dirs["local"]
             category = CATEGORY_TO_FOLDER.get(record.get("doc_type"), "Other")
             category_dir = case_dir / category
             category_dir.mkdir(parents=True, exist_ok=True)
 
             title_slug = slugify(record.get("doc_title", "document"))
-            filename = f"{case_slug}_{title_slug}.pdf"
+            title_slug = truncate_component(title_slug, MAX_FILE_STEM_LEN)
+            stem = truncate_component(f"{dirs['slug']}__{title_slug}", MAX_FILE_STEM_LEN * 2)
+            filename = f"{stem}.pdf"
             local_path = category_dir / filename
             counter = 2
             while local_path.exists() and local_path.stat().st_size > 0:
-                filename = f"{case_slug}_{title_slug}-{counter}.pdf"
+                stem = truncate_component(f"{dirs['slug']}__{title_slug}-{counter}", MAX_FILE_STEM_LEN * 2)
+                filename = f"{stem}.pdf"
                 local_path = category_dir / filename
                 counter += 1
 
@@ -246,6 +308,8 @@ def download_documents(
                                 f.write(chunk)
 
             record["local_path"] = str(local_path)
+            record["zip_case_dir"] = dirs["zip"]
+            record["zip_filename"] = os.path.basename(local_path)
             downloaded.append(record)
         except Exception as exc:
             record["local_path"] = ""
@@ -267,6 +331,17 @@ def main():
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--query-ieo-only", action="store_true", help="Only cases that mention IEO/derogation/revocation (faster)")
     mode.add_argument("--all-merger-cases", action="store_true", help="Parse all CMA merger cases (slower, more complete)")
+    mode.add_argument("--all-merger-cases-with-outcomes", action="store_true", help="Parse all CMA merger cases with specific outcome types (most complete)")
+    ap.add_argument(
+        "--only-derogations",
+        action="store_true",
+        help="Download only documents classified as derogations",
+    )
+    ap.add_argument(
+        "--only-full-text-decisions",
+        action="store_true",
+        help="Download only documents classified as 'Decision' and whose title contains 'Full text decision' (case-insensitive)",
+    )
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -274,7 +349,27 @@ def main():
 
     s = requests.Session()
 
-    if args.all_merger_cases:
+    if args.all_merger_cases_with_outcomes:
+        # Use the outcome types from the provided URL
+        outcome_types = [
+            "markets-phase-1-no-enforcement-action",
+            "markets-phase-1-undertakings-in-lieu-of-reference",
+            "markets-phase-1-referral",
+            "mergers-phase-1-clearance",
+            "mergers-phase-1-clearance-with-undertakings-in-lieu",
+            "mergers-phase-1-referral",
+            "mergers-phase-1-found-not-to-qualify",
+            "mergers-phase-1-public-interest-interventions",
+            "markets-phase-2-clearance-no-adverse-effect-on-competition",
+            "markets-phase-2-adverse-effect-on-competition-leading-to-remedies",
+            "markets-phase-2-decision-to-dispense-with-procedural-obligations",
+            "mergers-phase-2-clearance",
+            "mergers-phase-2-clearance-with-remedies",
+            "mergers-phase-2-prohibition",
+            "mergers-phase-2-cancellation",
+        ]
+        cases = search_all_merger_cases(s, outcome_types=outcome_types)
+    elif args.all_merger_cases:
         cases = search_all_merger_cases(s)
     else:
         cases = search_cases_ieo_only(s)
@@ -283,7 +378,7 @@ def main():
             fallback_url = f"{BASE}/cma-cases?case_type[]=mergers&keywords=initial+enforcement+order"
             r = s.get(fallback_url, headers=HEADERS, timeout=60)
             r.raise_for_status()
-            soup = BeautifulSoup(r.text, "lxml")
+            soup = BeautifulSoup(r.text, BS_PARSER)
             cases = [{"title": a.get_text(strip=True), "link": a["href"]}
                      for a in soup.select("a.gem-c-document-list__item-title, .gem-c-document-list a")
                      if a.get("href", "").startswith("/cma-cases/")]
@@ -305,28 +400,48 @@ def main():
             print(f"[warn] case {case_path}: {e}", file=sys.stderr)
         time.sleep(0.25)
 
-    # De-duplicate docs by URL
+
+    # De-duplicate docs by URL and apply filters
     seen, unique = set(), []
     for r in records:
         u = r["doc_url"]
-        if u not in seen:
-            seen.add(u)
-            unique.append(r)
+        if u in seen:
+            continue
+        seen.add(u)
+        # Derogation filter
+        if args.only_derogations and r.get("doc_type") != "Derogation":
+            continue
+        # Full text decision filter
+        if args.only_full_text_decisions:
+            if r.get("doc_type") != "Decision":
+                continue
+            title = r.get("doc_title", "").lower()
+            if "full text decision" not in title:
+                continue
+        unique.append(r)
 
     # Download
     downloaded = download_documents(s, unique, docs_dir)
 
-    # Index
-    df = pd.DataFrame(downloaded, columns=[
-        "case_title",
-        "case_url",
-        "case_path",
-        "doc_type",
-        "doc_title",
-        "doc_date_display",
-        "doc_url",
-        "local_path",
-    ])
+    # Track files not downloaded (failed downloads)
+    not_downloaded = [r for r in unique if not r.get("local_path")]
+
+    # Index: include all expected files, with not_downloaded column per row
+    all_rows = []
+    for r in unique:
+        row = {
+            "case_title": r.get("case_title", ""),
+            "case_url": r.get("case_url", ""),
+            "case_path": r.get("case_path", ""),
+            "doc_type": r.get("doc_type", ""),
+            "doc_title": r.get("doc_title", ""),
+            "doc_date_display": r.get("doc_date_display", ""),
+            "doc_url": r.get("doc_url", ""),
+            "local_path": r.get("local_path", ""),
+            "not_downloaded": "" if r.get("local_path") else "NOT DOWNLOADED",
+        }
+        all_rows.append(row)
+    df = pd.DataFrame(all_rows)
     df.sort_values(["case_title", "doc_type", "doc_title"], inplace=True)
     csv_path = os.path.join(args.out, "cma_ieo_derogs_revocations_index.csv")
     xlsx_path = os.path.join(args.out, "cma_ieo_derogs_revocations_index.xlsx")
@@ -345,14 +460,11 @@ def main():
                 continue
             if not os.path.exists(p):
                 continue
-            case_title = r.get("case_title") or r.get("case_path", "case")
-            case_folder = safe_folder_name(case_title)
-            case_slug = slugify(r.get("case_path", "case"))
-            if case_slug and case_slug not in case_folder:
-                case_folder = safe_folder_name(f"{case_folder}__{case_slug}")
+            zip_case_dir = r.get("zip_case_dir") or slugify(r.get("case_path", "case")) or "case"
+            zip_case_dir = truncate_component(zip_case_dir, MAX_CASE_DIR_LEN)
             category = CATEGORY_TO_FOLDER.get(r.get("doc_type"), "Other")
-            filename = os.path.basename(p)
-            arcname = f"{case_folder}/{category}/{filename}"
+            filename = r.get("zip_filename") or os.path.basename(p)
+            arcname = f"{zip_case_dir}/{category}/{filename}"
             z.write(p, arcname=arcname)
 
     print("Wrote:", csv_path)
