@@ -534,6 +534,9 @@ def download_documents(
                 local_path = category_dir / filename
                 counter += 1
 
+            if local_path.exists() and local_path.stat().st_size == 0:
+                local_path.unlink()
+
             if not local_path.exists():
                 with session.get(url, headers=HEADERS, stream=True, timeout=120) as resp:
                     resp.raise_for_status()
