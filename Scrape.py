@@ -110,6 +110,18 @@ CATEGORY_TO_FOLDER = {
 MAX_CASE_DIR_LEN = 80
 MAX_FILE_STEM_LEN = 96
 
+INDEX_COLUMNS = [
+    "case_title",
+    "case_url",
+    "case_path",
+    "doc_type",
+    "doc_title",
+    "doc_date_display",
+    "doc_url",
+    "local_path",
+    "not_downloaded",
+]
+
 
 def classify_type(text: str, href: str) -> str:
     """Return the best-guess document category for an attachment."""
@@ -509,7 +521,7 @@ def main():
             "not_downloaded": "" if r.get("local_path") else "NOT DOWNLOADED",
         }
         all_rows.append(row)
-    df = pd.DataFrame(all_rows)
+    df = pd.DataFrame(all_rows, columns=INDEX_COLUMNS)
     df.sort_values(["case_title", "doc_type", "doc_title"], inplace=True)
     csv_path = os.path.join(args.out, "cma_ieo_derogs_revocations_index.csv")
     xlsx_path = os.path.join(args.out, "cma_ieo_derogs_revocations_index.xlsx")
