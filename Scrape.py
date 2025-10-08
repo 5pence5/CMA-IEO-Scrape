@@ -18,7 +18,7 @@ import time
 import zipfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, unquote
 
 import pandas as pd
 import requests
@@ -398,6 +398,25 @@ ALLOWED_ASSET_HOST_SUFFIXES = (
     ".digital.cabinet-office.gov.uk",
 )
 
+TRUSTED_ARCHIVE_HOSTS = {
+    "webarchive.nationalarchives.gov.uk",
+}
+
+ARCHIVE_EMBEDDED_URL_RX = re.compile(r"(https?://[^?#]+)")
+
+
+def _extract_archived_asset_url(path: str, query: str) -> Optional[str]:
+    """Return the embedded asset URL from a National Archives wrapper."""
+
+    for value in (path, query):
+        if not value:
+            continue
+        decoded = unquote(value)
+        match = ARCHIVE_EMBEDDED_URL_RX.search(decoded)
+        if match:
+            return match.group(1)
+    return None
+
 
 def is_govuk_asset_url(href: str) -> bool:
     """Return True when the URL points at a recognised GOV.UK asset host."""
@@ -414,6 +433,12 @@ def is_govuk_asset_url(href: str) -> bool:
         return path.startswith("/government/uploads/")
     if host == "www.gov.uk":
         return path.startswith("/government/uploads/")
+
+    if host in TRUSTED_ARCHIVE_HOSTS:
+        embedded = _extract_archived_asset_url(parsed.path or "", parsed.query or "")
+        if embedded and embedded != href:
+            return is_govuk_asset_url(embedded)
+        return False
 
     host_label = host.split(".")[0]
     if host_label.startswith("assets") and any(host.endswith(suffix) for suffix in ALLOWED_ASSET_HOST_SUFFIXES):

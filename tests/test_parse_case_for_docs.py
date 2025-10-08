@@ -67,6 +67,11 @@ def legacy_case_html():
     return Path("tests/fixtures/legacy_asset_case.html").read_text()
 
 
+@pytest.fixture
+def national_archives_case_html():
+    return Path("tests/fixtures/national_archives_case.html").read_text()
+
+
 def test_parse_case_allows_legacy_asset_hosts(legacy_case_html):
     session = FakeSession(legacy_case_html)
     case = {"link": "/cma-cases/example-case", "title": "Example case"}
@@ -85,6 +90,20 @@ def test_parse_case_allows_legacy_asset_hosts(legacy_case_html):
     )
 
 
+def test_parse_case_includes_national_archives_assets(national_archives_case_html):
+    session = FakeSession(national_archives_case_html)
+    case = {"link": "/cma-cases/archived-case", "title": "Archived case"}
+
+    docs = parse_case_for_docs(session, case)
+
+    assert any(
+        doc["doc_url"].startswith(
+            "https://webarchive.nationalarchives.gov.uk/ukgwa/20210101010101/https://assets.publishing.service.gov.uk"
+        )
+        for doc in docs
+    )
+
+
 def test_is_govuk_asset_url_accepts_mirrors():
     assert is_govuk_asset_url(
         "https://assets.digital.cabinet-office.gov.uk/government/uploads/system/uploads/attachment_data/file/123456/legacy-derogation.pdf"
@@ -94,6 +113,9 @@ def test_is_govuk_asset_url_accepts_mirrors():
     )
     assert is_govuk_asset_url(
         "https://www.gov.uk/government/uploads/system/uploads/attachment_data/file/000001/file.pdf"
+    )
+    assert is_govuk_asset_url(
+        "https://webarchive.nationalarchives.gov.uk/ukgwa/20210101010101/https://assets.publishing.service.gov.uk/government/uploads/system/uploads/attachment_data/file/999999/archived-order.pdf"
     )
     assert is_govuk_asset_url("/government/uploads/system/uploads/attachment_data/file/000001/file.pdf")
     assert is_govuk_asset_url("https://www.gov.uk/government/uploads/system/file.pdf")
