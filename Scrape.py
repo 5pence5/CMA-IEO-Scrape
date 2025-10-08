@@ -17,7 +17,7 @@ import sys
 import time
 import zipfile
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 from urllib.parse import urljoin, urlparse
 
 import pandas as pd
@@ -362,8 +362,13 @@ def download_documents(
             filename = f"{stem}.pdf"
             local_path = category_dir / filename
             counter = 2
-            while local_path.exists() and local_path.stat().st_size > 0:
-                stem = truncate_component(f"{dirs['slug']}__{title_slug}-{counter}", MAX_FILE_STEM_LEN * 2)
+            while local_path.exists():
+                if local_path.stat().st_size == 0:
+                    local_path.unlink()
+                    break
+                stem = truncate_component(
+                    f"{dirs['slug']}__{title_slug}-{counter}", MAX_FILE_STEM_LEN * 2
+                )
                 filename = f"{stem}.pdf"
                 local_path = category_dir / filename
                 counter += 1
@@ -376,9 +381,17 @@ def download_documents(
                             if chunk:
                                 f.write(chunk)
 
-            record["local_path"] = str(local_path)
+            final_path: Optional[Path]
+            if local_path.exists() and local_path.stat().st_size > 0:
+                final_path = local_path
+            else:
+                if local_path.exists():
+                    local_path.unlink()
+                final_path = None
+
+            record["local_path"] = str(final_path) if final_path else ""
             record["zip_case_dir"] = dirs["zip"]
-            record["zip_filename"] = os.path.basename(local_path)
+            record["zip_filename"] = os.path.basename(final_path) if final_path else ""
             downloaded.append(record)
         except Exception as exc:
             record["local_path"] = ""
