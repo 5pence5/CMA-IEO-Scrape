@@ -18,7 +18,7 @@ import time
 import zipfile
 from pathlib import Path
 from typing import Dict, Iterable, List
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import pandas as pd
 import requests
@@ -188,6 +188,35 @@ def ensure_absolute_asset_url(case_url: str, href: str) -> str:
     return urljoin(case_url, href)
 
 
+ALLOWED_ASSET_HOST_SUFFIXES = (
+    ".publishing.service.gov.uk",
+    ".digital.cabinet-office.gov.uk",
+)
+
+
+def is_govuk_asset_url(href: str) -> bool:
+    """Return True when the URL points at a recognised GOV.UK asset host."""
+
+    if not href:
+        return False
+
+    parsed = urlparse(href)
+    host = (parsed.netloc or "").lower()
+    path = parsed.path or ""
+
+    # /government/uploads/... links can be served from www.gov.uk or relative paths.
+    if not host:
+        return path.startswith("/government/uploads/")
+    if host == "www.gov.uk":
+        return path.startswith("/government/uploads/")
+
+    host_label = host.split(".")[0]
+    if host_label.startswith("assets") and any(host.endswith(suffix) for suffix in ALLOWED_ASSET_HOST_SUFFIXES):
+        return True
+
+    return False
+
+
 def parse_case_for_docs(session, case: Dict[str, str]) -> List[Dict[str, str]]:
     """Parse a case page and return list of attachment dicts that look like IEO/Revocation/Derogation."""
     case_path = case.get("link", "")
@@ -203,8 +232,9 @@ def parse_case_for_docs(session, case: Dict[str, str]) -> List[Dict[str, str]]:
     for a in soup.select("a"):
         text = a.get_text(" ", strip=True)
         href = ensure_absolute_asset_url(url, a.get("href", ""))
-        # We only care about GOV.UK assets (PDFs usually at assets.publishing.service.gov.uk)
-        if not href or "assets.publishing.service.gov.uk" not in href:
+        # We only care about GOV.UK asset mirrors (assets.*.service.gov.uk or
+        # /government/uploads/ served from www.gov.uk and legacy hosts).
+        if not is_govuk_asset_url(href):
             continue
         if not href.lower().endswith(".pdf"):
             # Ignore non-PDF attachments.
