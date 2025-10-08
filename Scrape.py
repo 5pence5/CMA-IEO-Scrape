@@ -72,6 +72,41 @@ MAX_CASE_DIR_LEN = 80
 MAX_FILE_STEM_LEN = 96
 
 
+def _normalise_full_text_label(label: str) -> str:
+    """Return a lowercased, punctuation-stripped label for full text checks."""
+
+    if not label:
+        return ""
+    text = label.lower()
+    # Replace hyphen-like punctuation with spaces to unify "full-text" variants.
+    text = re.sub(r"[\-–—]", " ", text)
+    # Remove the historically noisy "of the" phrase which breaks simple substring checks.
+    text = re.sub(r"\bof the\b", " ", text)
+    # Drop any remaining punctuation so we can compare on tokens only.
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    # Collapse duplicate whitespace and trim.
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+FULL_TEXT_DECISION_PATTERNS = [
+    re.compile(r"\bfull\s+text\s+decision\b"),
+    re.compile(r"\bfull\s+decision\s+text\b"),
+]
+
+
+def is_full_text_decision_title(title: str) -> bool:
+    """Return True if the title matches known full text decision phrasing variants."""
+
+    normalised = _normalise_full_text_label(title)
+    if not normalised:
+        return False
+    for pattern in FULL_TEXT_DECISION_PATTERNS:
+        if pattern.search(normalised):
+            return True
+    return False
+
+
 def classify_type(text: str, href: str) -> str:
     """Return the best-guess document category for an attachment."""
 
@@ -415,8 +450,8 @@ def main():
         if args.only_full_text_decisions:
             if r.get("doc_type") != "Decision":
                 continue
-            title = r.get("doc_title", "").lower()
-            if "full text decision" not in title:
+            title = r.get("doc_title", "")
+            if not is_full_text_decision_title(title):
                 continue
         unique.append(r)
 
