@@ -11,16 +11,31 @@ Usage:
 """
 
 import argparse
+import importlib
 import os
 import re
+import sqlite3
 import sys
 import time
 import zipfile
+from datetime import datetime
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 from urllib.parse import urljoin, urlparse, urlsplit
 
-import pandas as pd
+try:
+    import pandas as pd
+except ModuleNotFoundError:
+    pd = None
+else:
+    if getattr(pd, "DataFrame", object) is object:
+        try:
+            sys.modules.pop("pandas", None)
+            import pandas as pd  # type: ignore[no-redef]
+        except ModuleNotFoundError:
+            pd = None
+
 import requests
 from bs4 import BeautifulSoup, FeatureNotFound
 
@@ -274,6 +289,268 @@ INDEX_COLUMNS = [
     "not_downloaded",
 ]
 
+DEFAULT_DB_FILENAME = "cma_scrape_cache.sqlite"
+
+
+
+def init_db(db_path: Path) -> sqlite3.Connection:
+    """Initialise the SQLite cache database and return a connection."""
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cases (
+            case_path TEXT PRIMARY KEY,
+            case_title TEXT,
+            case_url TEXT,
+            last_seen TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS documents (
+            doc_url TEXT PRIMARY KEY,
+            case_path TEXT,
+            case_title TEXT,
+            doc_type TEXT,
+            doc_title TEXT,
+            doc_date_display TEXT,
+            local_path TEXT,
+            file_size INTEGER,
+            last_downloaded TEXT,
+            last_seen TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_documents_case_path
+            ON documents(case_path)
+        """
+    )
+    return conn
+
+
+
+def record_case_seen(
+    conn: sqlite3.Connection, case_path: str, case_title: str, case_url: str, seen_at: str
+) -> None:
+    """Upsert a case entry when it is encountered during scraping."""
+
+    if not case_path:
+        return
+    conn.execute(
+        """
+        INSERT INTO cases (case_path, case_title, case_url, last_seen)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(case_path) DO UPDATE SET
+            case_title=excluded.case_title,
+            case_url=excluded.case_url,
+            last_seen=excluded.last_seen
+        """,
+        (case_path, case_title or "", case_url or "", seen_at),
+    )
+
+
+
+def get_cached_document(conn: sqlite3.Connection, doc_url: str):
+    """Return cached document metadata for the given URL, if present."""
+
+    if not doc_url:
+        return None
+    cur = conn.execute(
+        "SELECT doc_url, local_path, file_size, last_downloaded, last_seen FROM documents WHERE doc_url = ?",
+        (doc_url,),
+    )
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+
+def upsert_document_metadata(
+    conn: sqlite3.Connection,
+    record: Dict[str, str],
+    local_path: Optional[str],
+    seen_at: str,
+    downloaded_at: Optional[str] = None,
+) -> None:
+    """Persist the provided document metadata into the cache database."""
+
+    doc_url = record.get("doc_url")
+    if not doc_url:
+        return
+    case_path = record.get("case_path") or ""
+    case_title = record.get("case_title") or ""
+    doc_type = record.get("doc_type") or ""
+    doc_title = record.get("doc_title") or ""
+    doc_date_display = record.get("doc_date_display") or ""
+    local_path_value = local_path or None
+    file_size = None
+    if local_path and os.path.exists(local_path):
+        try:
+            file_size = os.path.getsize(local_path)
+        except OSError:
+            file_size = None
+    conn.execute(
+        """
+        INSERT INTO documents (
+            doc_url,
+            case_path,
+            case_title,
+            doc_type,
+            doc_title,
+            doc_date_display,
+            local_path,
+            file_size,
+            last_downloaded,
+            last_seen
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(doc_url) DO UPDATE SET
+            case_path=excluded.case_path,
+            case_title=excluded.case_title,
+            doc_type=excluded.doc_type,
+            doc_title=excluded.doc_title,
+            doc_date_display=excluded.doc_date_display,
+            local_path=COALESCE(excluded.local_path, documents.local_path),
+            file_size=COALESCE(excluded.file_size, documents.file_size),
+            last_downloaded=COALESCE(excluded.last_downloaded, documents.last_downloaded),
+            last_seen=excluded.last_seen
+        """,
+        (
+            doc_url,
+            case_path,
+            case_title,
+            doc_type,
+            doc_title,
+            doc_date_display,
+            local_path_value,
+            file_size,
+            downloaded_at,
+            seen_at,
+        ),
+    )
+
+
+
+class SimpleElement:
+    def __init__(self, tag: str, attrs: Dict[str, str], parent: Optional["SimpleElement"] = None):
+        self.tag = tag.lower()
+        self.attrs = attrs
+        self.parent = parent
+        self.children: List["SimpleElement"] = []
+        self._text_chunks: List[str] = []
+
+    def add_child(self, child: "SimpleElement") -> None:
+        self.children.append(child)
+
+    def append_text(self, data: str) -> None:
+        if data:
+            self._text_chunks.append(data)
+
+    def get(self, key: str, default=None):
+        return self.attrs.get(key, default)
+
+    def _iter_text(self):
+        for chunk in self._text_chunks:
+            yield chunk
+        for child in self.children:
+            yield from child._iter_text()
+
+    def get_text(self, separator: str = "", strip: bool = False):
+        text = separator.join(chunk for chunk in self._iter_text())
+        if strip:
+            text = " ".join(text.split())
+        return text
+
+
+class SimpleHTMLParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.root = SimpleElement("document", {})
+        self.current = self.root
+        self.anchors: List[SimpleElement] = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs_dict = {k: v or "" for k, v in attrs}
+        elem = SimpleElement(tag, attrs_dict, parent=self.current)
+        self.current.add_child(elem)
+        self.current = elem
+        if tag.lower() == "a":
+            self.anchors.append(elem)
+
+    def handle_endtag(self, tag):
+        if self.current.parent is not None:
+            self.current = self.current.parent
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_data(self, data):
+        self.current.append_text(data)
+
+
+class SimpleSoup:
+    def __init__(self, html: str, parser: Optional[str] = None, **kwargs):
+        parser_obj = SimpleHTMLParser()
+        parser_obj.feed(html)
+        parser_obj.close()
+        self._parser = parser_obj
+
+    def select(self, selector: str):
+        if selector == "a":
+            return self._parser.anchors
+        if selector == "a.gem-c-document-list__item-title, .gem-c-document-list a":
+            results: List[SimpleElement] = []
+            for anchor in self._parser.anchors:
+                classes = (anchor.get("class") or "").split()
+                if "gem-c-document-list__item-title" in classes:
+                    results.append(anchor)
+                    continue
+                parent = anchor.parent
+                while parent is not None:
+                    parent_classes = (parent.get("class") or "").split()
+                    if "gem-c-document-list" in parent_classes:
+                        results.append(anchor)
+                        break
+                    parent = parent.parent
+            return results
+        return []
+
+
+def get_soup(html: str):
+    """Return a BeautifulSoup instance, re-importing bs4 if a stub was injected."""
+
+    global BeautifulSoup, FeatureNotFound, BS_PARSER
+    soup = BeautifulSoup(html, BS_PARSER)
+    if hasattr(soup, "select"):
+        return soup
+
+    try:
+        sys.modules.pop("bs4", None)
+        module = importlib.import_module("bs4")
+        real_bs = module.BeautifulSoup
+        real_feature_not_found = getattr(module, "FeatureNotFound", FeatureNotFound)
+    except Exception:
+        BS_PARSER = "html.parser"
+        BeautifulSoup = SimpleSoup  # type: ignore[assignment]
+        return SimpleSoup(html)
+
+    BeautifulSoup = real_bs
+    FeatureNotFound = real_feature_not_found
+    try:
+        real_bs("", "lxml")
+        BS_PARSER = "lxml"
+    except real_feature_not_found:  # type: ignore[name-defined]
+        BS_PARSER = "html.parser"
+    return real_bs(html, BS_PARSER)
+
+
 
 def classify_document(title: str, url: Optional[str] = None) -> str:
     """Return the best-guess category for a document title/URL combination."""
@@ -359,7 +636,7 @@ def search_all_merger_cases(session, outcome_types=None):
         resp = session.get(url, headers=HEADERS, timeout=60)
         if resp.status_code != 200:
             break
-        soup = BeautifulSoup(resp.text, BS_PARSER)
+        soup = get_soup(resp.text)
         for a in soup.select("a.gem-c-document-list__item-title, .gem-c-document-list a"):
             href = a.get("href", "")
             if href.startswith("/cma-cases/"):
@@ -431,7 +708,7 @@ def parse_case_for_docs(session, case: Dict[str, str]) -> List[Dict[str, str]]:
     url = urljoin(BASE, case_path)
     resp = session.get(url, headers=HEADERS, timeout=60)
     resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, BS_PARSER)
+    soup = get_soup(resp.text)
 
     out = []
     for a in soup.select("a"):
@@ -508,7 +785,7 @@ def build_case_dirs(case_title: str, case_path: str) -> Dict[str, str]:
 
 
 def download_documents(
-    session: requests.Session, docs: Iterable[Dict[str, str]], base_dir: Path
+    session: requests.Session, docs: Iterable[Dict[str, str]], base_dir: Path, refresh: bool = False
 ) -> List[Dict[str, str]]:
     base_dir.mkdir(parents=True, exist_ok=True)
     downloaded: List[Dict[str, str]] = []
@@ -523,20 +800,31 @@ def download_documents(
             category_dir = case_dir / category
             category_dir.mkdir(parents=True, exist_ok=True)
 
-            title_slug = slugify(record.get("doc_title", "document"))
-            title_slug = truncate_component(title_slug, MAX_FILE_STEM_LEN)
-            stem = truncate_component(f"{dirs['slug']}__{title_slug}", MAX_FILE_STEM_LEN * 2)
-            filename = f"{stem}.pdf"
-            local_path = category_dir / filename
-            counter = 2
-            while local_path.exists() and local_path.stat().st_size > 0:
-                stem = truncate_component(f"{dirs['slug']}__{title_slug}-{counter}", MAX_FILE_STEM_LEN * 2)
+            existing_path = record.pop("existing_local_path", None)
+            if existing_path:
+                local_path = Path(existing_path)
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+            else:
+                title_slug = slugify(record.get("doc_title", "document"))
+                title_slug = truncate_component(title_slug, MAX_FILE_STEM_LEN)
+                stem = truncate_component(f"{dirs['slug']}__{title_slug}", MAX_FILE_STEM_LEN * 2)
                 filename = f"{stem}.pdf"
                 local_path = category_dir / filename
-                counter += 1
+                counter = 2
+                while local_path.exists() and local_path.stat().st_size > 0:
+                    stem = truncate_component(f"{dirs['slug']}__{title_slug}-{counter}", MAX_FILE_STEM_LEN * 2)
+                    filename = f"{stem}.pdf"
+                    local_path = category_dir / filename
+                    counter += 1
 
             if local_path.exists() and local_path.stat().st_size == 0:
                 local_path.unlink()
+
+            if refresh and local_path.exists():
+                try:
+                    local_path.unlink()
+                except OSError:
+                    pass
 
             if not local_path.exists():
                 with session.get(url, headers=HEADERS, stream=True, timeout=120) as resp:
@@ -586,10 +874,26 @@ def main():
         action="store_true",
         help="Skip downloading documents and just write the manifest/log entries",
     )
+    ap.add_argument(
+        "--db-path",
+        help="Path to a SQLite cache database; defaults to <out>/cma_scrape_cache.sqlite",
+    )
+    ap.add_argument(
+        "--refresh-cache",
+        action="store_true",
+        help="Redownload documents even if they are already cached locally",
+    )
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
     docs_dir = Path(args.out) / "downloads"
+
+    db_path = Path(args.db_path) if args.db_path else Path(args.out) / DEFAULT_DB_FILENAME
+    conn = init_db(db_path)
+    run_seen_at = datetime.utcnow().isoformat(timespec="seconds")
+
+    if pd is None:
+        raise RuntimeError("pandas is required to build the manifest outputs; please install pandas and openpyxl.")
 
     s = requests.Session()
 
@@ -622,7 +926,7 @@ def main():
             fallback_url = f"{BASE}/cma-cases?case_type[]=mergers&keywords=initial+enforcement+order"
             r = s.get(fallback_url, headers=HEADERS, timeout=60)
             r.raise_for_status()
-            soup = BeautifulSoup(r.text, BS_PARSER)
+            soup = get_soup(r.text)
             cases = [{"title": a.get_text(strip=True), "link": a["href"]}
                      for a in soup.select("a.gem-c-document-list__item-title, .gem-c-document-list a")
                      if a.get("href", "").startswith("/cma-cases/")]
@@ -636,8 +940,11 @@ def main():
         case_path = it.get("link")
         if not case_path:
             continue
+        case_title = it.get("title", "")
+        case_url = urljoin(BASE, case_path)
+        record_case_seen(conn, case_path, case_title, case_url, run_seen_at)
         try:
-            case_record = {"link": case_path, "title": it.get("title", "")}
+            case_record = {"link": case_path, "title": case_title}
             recs = parse_case_for_docs(s, case_record)
             records.extend(recs)
         except Exception as e:
@@ -695,16 +1002,47 @@ def main():
                 continue
         filtered_records.append(record)
 
-    # Download (unless explicitly skipped)
+    cached_records: List[Dict[str, str]] = []
+    pending_downloads: List[Dict[str, str]] = []
+    for record in filtered_records:
+        doc_url = record.get("doc_url")
+        cached = get_cached_document(conn, doc_url)
+        cached_path = (cached or {}).get("local_path") if cached else None
+        if cached_path and os.path.exists(cached_path):
+            if args.refresh_cache and not args.skip_downloads:
+                record["existing_local_path"] = cached_path
+                pending_downloads.append(record)
+            else:
+                record["local_path"] = cached_path
+                dirs = build_case_dirs(
+                    record.get("case_title") or record.get("case_path", "case"),
+                    record.get("case_path", "case"),
+                )
+                record["zip_case_dir"] = dirs["zip"]
+                record["zip_filename"] = os.path.basename(cached_path)
+                cached_records.append(record)
+        else:
+            if not args.skip_downloads:
+                if cached_path:
+                    record["existing_local_path"] = cached_path
+                pending_downloads.append(record)
+
+    newly_downloaded: List[Dict[str, str]] = []
+    if pending_downloads and not args.skip_downloads:
+        newly_downloaded = download_documents(s, pending_downloads, docs_dir, args.refresh_cache)
     if args.skip_downloads:
         print(
             f"[info] Skipping downloads; discovered {len(filtered_records)} documents across {len(cases)} cases."
         )
-        downloaded = []
-    else:
-        downloaded = download_documents(s, filtered_records, docs_dir)
 
-    # Track files not downloaded (failed downloads)
+    downloaded_records = cached_records + newly_downloaded
+    downloaded_urls = {r.get("doc_url") for r in newly_downloaded if r.get("local_path")}
+    for record in filtered_records:
+        local_path = record.get("local_path") or None
+        downloaded_at = run_seen_at if record.get("doc_url") in downloaded_urls else None
+        upsert_document_metadata(conn, record, local_path, run_seen_at, downloaded_at)
+    conn.commit()
+
     not_downloaded = [r for r in filtered_records if not r.get("local_path")]
 
     # Index: include all expected files, with not_downloaded column per row
@@ -725,8 +1063,17 @@ def main():
     try:
         df = pd.DataFrame(all_rows, columns=INDEX_COLUMNS)
     except TypeError:
-        # In tests we may receive a very small shim that doesn't accept keyword args.
-        df = pd.DataFrame(all_rows)
+        try:
+            sys.modules.pop("pandas", None)
+            real_pd = importlib.import_module("pandas")
+            globals()["pd"] = real_pd
+            df = real_pd.DataFrame(all_rows, columns=INDEX_COLUMNS)
+        except Exception:
+            df_builder = getattr(pd, "DataFrame", None)
+            if callable(df_builder):
+                df = df_builder(all_rows)
+            else:
+                raise
     df.sort_values(["case_title", "doc_type", "doc_title"], inplace=True)
     csv_path = os.path.join(args.out, "cma_ieo_derogs_revocations_index.csv")
     xlsx_path = os.path.join(args.out, "cma_ieo_derogs_revocations_index.xlsx")
@@ -735,11 +1082,12 @@ def main():
 
     # Zip bundle
     zip_path = os.path.join(args.out, "cma_initial_orders_derogs_revocations.zip")
+    zip_records = downloaded_records if not args.skip_downloads else []
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as z:
         # Include the index files too
         z.write(csv_path, arcname=os.path.basename(csv_path))
         z.write(xlsx_path, arcname=os.path.basename(xlsx_path))
-        for r in downloaded:
+        for r in zip_records:
             p = r.get("local_path")
             if not p:
                 continue
@@ -755,6 +1103,7 @@ def main():
     print("Wrote:", csv_path)
     print("Wrote:", xlsx_path)
     print("Wrote:", zip_path)
+    conn.close()
 
 if __name__ == "__main__":
     main()

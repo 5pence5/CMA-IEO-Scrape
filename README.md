@@ -42,6 +42,7 @@ The script creates:
     - Categories: `IEOs`, `Derogations`, `Revocations`, `Other`
 
 4. **Downloads folder**: `downloads/` (intermediate storage for PDFs)
+5. **SQLite cache**: `cma_scrape_cache.sqlite` (created alongside `--out` unless `--db-path` overrides it)
 
 ## Important Notes
 
@@ -57,6 +58,14 @@ The script creates:
 The script reuses the `--out` directory. To avoid confusion:
 - Remove old artifacts with `rm -rf ./output` before running fresh tests
 - Or use a different output directory each time
+
+### Persistent cache & incremental updates
+
+- Each run populates a SQLite database (`cma_scrape_cache.sqlite` by default) that records case metadata, document URLs, and local file paths.
+- Rerunning the scraper against the same database will skip network downloads for documents that already exist locally.
+- Use `--db-path` to point at a shared cache location or keep separate caches per output directory.
+- Pass `--refresh-cache` to force redownloading cached files when you need to refresh existing PDFs.
+- `--skip-downloads` still updates the manifest/database but will not fetch missing files.
 
 ## Recent Fixes
 
