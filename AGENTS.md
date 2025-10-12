@@ -118,3 +118,19 @@ Verified with simulated scenarios:
 - Confirmed per-row `not_downloaded` flags are populated in the index so missed documents are easy to audit.
 - Ran `python3 Scrape.py --out ./fulltext_decisions_outcomes --all-merger-cases-with-outcomes --only-full-text-decisions` to exercise the new mode across the full dataset (≈1.8k decision PDFs).
 - Smoke-tested with `python3 Scrape.py --out ./smoke_fulltext --all-merger-cases-with-outcomes --only-full-text-decisions --max-cases 3` to ensure small-batch operation still succeeds.
+
+
+## Plan (2025-10-09) - Persistent cache/database for scraper
+1. Audit current scrape flow to identify points where case discovery and document download occur.
+2. Design a lightweight persistence layer (likely SQLite) that records discovered cases and documents, including metadata such as last-seen timestamps, URLs, and local file paths.
+3. Extend CLI to accept a database path (defaulting alongside `--out`) and a flag to refresh/update without re-downloading unchanged documents.
+4. Implement database helpers for creating tables, inserting/upserting case/doc rows, and querying for stale or missing downloads.
+5. Modify download pipeline to consult the database before fetching; skip already-downloaded documents unless a refresh is requested.
+6. Ensure manifest/ZIP generation works off combined in-memory + cached data so outputs remain correct.
+7. Add documentation in README and update AGENTS run log with usage/testing notes.
+8. Provide migration guidance for existing runs (e.g., how to initialise or reset the database).
+
+## Run Log (2025-10-09)
+- Implemented a persistent SQLite cache with `--db-path` and `--refresh-cache` flags so reruns reuse prior downloads.
+- Added defensive soup and pandas re-import helpers to coexist with test stubs while still supporting real scraping runs.
+- Documented the cache workflow in README and verified unit tests with `pytest` after installing `pandas`/`openpyxl`.
