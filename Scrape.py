@@ -30,11 +30,12 @@ except ModuleNotFoundError:
     pd = None
 else:
     if getattr(pd, "DataFrame", object) is object:
+        _pd_stub = pd
         try:
             sys.modules.pop("pandas", None)
             import pandas as pd  # type: ignore[no-redef]
         except ModuleNotFoundError:
-            pd = None
+            pd = _pd_stub
 
 import requests
 from bs4 import BeautifulSoup, FeatureNotFound
