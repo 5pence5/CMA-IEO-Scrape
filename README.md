@@ -30,6 +30,36 @@ python Scrape.py --out ./output --all-merger-cases
 python Scrape.py --out ./output --max-cases 10 --query-ieo-only
 ```
 
+### File Caching
+
+The scraper now includes a file caching system to prevent redundant downloads. By default, files are cached in a SQLite database.
+
+**Cache is enabled by default**. Subsequent runs will skip downloading files that are already cached and verified.
+
+```bash
+# Normal usage with caching (default)
+python Scrape.py --out ./output --query-ieo-only
+
+# Disable caching (force redownload)
+python Scrape.py --out ./output --query-ieo-only --no-cache
+
+# Use custom cache database location
+python Scrape.py --out ./output --query-ieo-only --cache-db /path/to/cache.db
+
+# View cache statistics
+python Scrape.py --out ./output --cache-stats
+
+# Clean up orphaned cache entries (files that no longer exist)
+python Scrape.py --out ./output --cache-clean
+```
+
+**Cache benefits**:
+- Skips downloading files that haven't changed
+- Verifies file integrity using SHA256 hashes
+- Supports HTTP ETag and Last-Modified headers for conditional requests
+- Significantly speeds up subsequent runs
+- Prevents unnecessary bandwidth usage
+
 ## Output Structure
 
 The script creates:
@@ -42,6 +72,7 @@ The script creates:
     - Categories: `IEOs`, `Derogations`, `Revocations`, `Other`
 
 4. **Downloads folder**: `downloads/` (intermediate storage for PDFs)
+5. **Cache database**: `file_cache.db` (SQLite database tracking downloaded files)
 
 ## Important Notes
 

@@ -24,6 +24,8 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup, FeatureNotFound
 
+from cache_db import FileCache
+
 try:
     BeautifulSoup("", "lxml")
     BS_PARSER = "lxml"
@@ -508,14 +510,52 @@ def build_case_dirs(case_title: str, case_path: str) -> Dict[str, str]:
 
 
 def download_documents(
-    session: requests.Session, docs: Iterable[Dict[str, str]], base_dir: Path
+    session: requests.Session,
+    docs: Iterable[Dict[str, str]],
+    base_dir: Path,
+    cache: Optional[FileCache] = None
 ) -> List[Dict[str, str]]:
+    """
+    Download documents, using cache to skip already-downloaded files.
+
+    Args:
+        session: requests Session object
+        docs: Iterable of document records with metadata
+        base_dir: Base directory for downloads
+        cache: Optional FileCache instance for tracking downloads
+
+    Returns:
+        List of document records with local_path populated
+    """
     base_dir.mkdir(parents=True, exist_ok=True)
     downloaded: List[Dict[str, str]] = []
+
+    cache_hits = 0
+    cache_misses = 0
+    new_downloads = 0
 
     for idx, record in enumerate(docs, 1):
         url = record["doc_url"]
         try:
+            # Check cache first if available
+            if cache:
+                cached = cache.get_cached_file(url)
+                if cached and cache.verify_cached_file(url):
+                    # File is in cache and verified - use it
+                    record["local_path"] = cached["local_path"]
+                    record["zip_case_dir"] = record.get("case_path", "case")
+                    record["zip_filename"] = os.path.basename(cached["local_path"])
+                    downloaded.append(record)
+                    cache_hits += 1
+                    print(f"[cache hit] {url}", file=sys.stderr)
+                    continue
+                elif cached:
+                    # Was in cache but verification failed - will redownload
+                    print(f"[cache invalid] {url} - redownloading", file=sys.stderr)
+                    cache.invalidate_url(url)
+
+            cache_misses += 1
+
             case_title = record.get("case_title") or record.get("case_path", "case")
             dirs = build_case_dirs(case_title, record.get("case_path", "case"))
             case_dir = base_dir / dirs["local"]
@@ -538,13 +578,56 @@ def download_documents(
             if local_path.exists() and local_path.stat().st_size == 0:
                 local_path.unlink()
 
-            if not local_path.exists():
-                with session.get(url, headers=HEADERS, stream=True, timeout=120) as resp:
+            # Download if file doesn't exist
+            needs_download = not local_path.exists()
+            etag = None
+            last_modified = None
+
+            if needs_download:
+                # Prepare headers for conditional request if we have cached metadata
+                request_headers = HEADERS.copy()
+                if cache:
+                    cached = cache.get_cached_file(url)
+                    if cached:
+                        if cached.get("etag"):
+                            request_headers["If-None-Match"] = cached["etag"]
+                        if cached.get("last_modified"):
+                            request_headers["If-Modified-Since"] = cached["last_modified"]
+
+                with session.get(url, headers=request_headers, stream=True, timeout=120) as resp:
+                    if resp.status_code == 304:
+                        # Not modified - should not happen since we deleted the file
+                        print(f"[info] Server returned 304 Not Modified for {url}", file=sys.stderr)
+                        continue
+
                     resp.raise_for_status()
+
+                    # Extract caching headers
+                    etag = resp.headers.get("ETag")
+                    last_modified = resp.headers.get("Last-Modified")
+
                     with open(local_path, "wb") as f:
                         for chunk in resp.iter_content(chunk_size=8192):
                             if chunk:
                                 f.write(chunk)
+
+                    new_downloads += 1
+                    print(f"[downloaded] {url}", file=sys.stderr)
+
+            # Add to cache if available
+            if cache and local_path.exists():
+                cache.add_or_update_file(
+                    url=url,
+                    local_path=local_path,
+                    etag=etag,
+                    last_modified=last_modified,
+                    case_title=record.get("case_title"),
+                    case_url=record.get("case_url"),
+                    case_path=record.get("case_path"),
+                    doc_type=record.get("doc_type"),
+                    doc_title=record.get("doc_title"),
+                    doc_date_display=record.get("doc_date_display"),
+                )
 
             record["local_path"] = str(local_path)
             record["zip_case_dir"] = dirs["zip"]
@@ -555,6 +638,10 @@ def download_documents(
             downloaded.append(record)
             print(f"[warn] download failed {url}: {exc}", file=sys.stderr)
         time.sleep(0.2)
+
+    # Print cache statistics
+    if cache:
+        print(f"\n[cache stats] Hits: {cache_hits}, Misses: {cache_misses}, New downloads: {new_downloads}", file=sys.stderr)
 
     return downloaded
 
@@ -586,10 +673,56 @@ def main():
         action="store_true",
         help="Skip downloading documents and just write the manifest/log entries",
     )
+    ap.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable file caching (will redownload all files)",
+    )
+    ap.add_argument(
+        "--cache-db",
+        default=None,
+        help="Path to cache database file (default: <out>/file_cache.db)",
+    )
+    ap.add_argument(
+        "--cache-stats",
+        action="store_true",
+        help="Show cache statistics and exit",
+    )
+    ap.add_argument(
+        "--cache-clean",
+        action="store_true",
+        help="Remove orphaned cache entries (where files no longer exist) and exit",
+    )
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
     docs_dir = Path(args.out) / "downloads"
+
+    # Initialize cache
+    cache = None
+    if not args.no_cache:
+        cache_db_path = Path(args.cache_db) if args.cache_db else Path(args.out) / "file_cache.db"
+        cache = FileCache(cache_db_path)
+
+        # Handle cache management commands
+        if args.cache_stats:
+            stats = cache.get_cache_stats()
+            print("\n=== Cache Statistics ===")
+            print(f"Total files: {stats['total_files']}")
+            print(f"Total size: {stats['total_size_mb']} MB ({stats['total_size_bytes']} bytes)")
+            print(f"Verified files: {stats['verified_files']}")
+            print("\nFiles by type:")
+            for doc_type, count in sorted(stats['files_by_type'].items()):
+                print(f"  {doc_type}: {count}")
+            cache.close()
+            return
+
+        if args.cache_clean:
+            print("Cleaning orphaned cache entries...")
+            removed = cache.clean_orphaned_entries()
+            print(f"Removed {removed} orphaned entries")
+            cache.close()
+            return
 
     s = requests.Session()
 
@@ -702,7 +835,7 @@ def main():
         )
         downloaded = []
     else:
-        downloaded = download_documents(s, filtered_records, docs_dir)
+        downloaded = download_documents(s, filtered_records, docs_dir, cache)
 
     # Track files not downloaded (failed downloads)
     not_downloaded = [r for r in filtered_records if not r.get("local_path")]
@@ -755,6 +888,10 @@ def main():
     print("Wrote:", csv_path)
     print("Wrote:", xlsx_path)
     print("Wrote:", zip_path)
+
+    # Close cache if it was opened
+    if cache:
+        cache.close()
 
 if __name__ == "__main__":
     main()
