@@ -1,0 +1,85 @@
+# Historical agent records
+
+Moved from `AGENTS.md` on 2026-09-07. These are historical records, not current instructions or verified current status. Original wording is preserved.
+
+## Run Log (2025-02-14)
+- Executed `python Scrape.py --out ./test_output --max-cases 3 --query-ieo-only` after installing required Python dependencies (`requests`, `beautifulsoup4`, `lxml`, `pandas`, `openpyxl`).
+- Initial run failed because `pandas` was missing (`ModuleNotFoundError`). Installing the documented dependencies resolved the issue and the script produced the CSV/XLSX manifest, ZIP archive, and per-case download folders successfully.
+
+## Run Log (2025-02-15)
+- Attempted `python Scrape.py --out ./test_output --max-cases 1 --query-ieo-only`; run failed with `ModuleNotFoundError: No module named 'pandas'`.
+- Installed the documented dependencies via `pip install requests beautifulsoup4 lxml pandas openpyxl`.
+- Re-ran `python Scrape.py --out ./test_output --max-cases 1 --query-ieo-only`; the script reported writing the manifest CSV/XLSX and `cma_initial_orders_derogs_revocations.zip`.
+- Verified artefacts with `ls test_output`, which shows `cma_initial_orders_derogs_revocations.zip`, the manifest files, and the per-case `downloads/` folder.
+- **Reminder:** the scraper reuses the `--out` directory, so remove any old artefacts with `rm -rf ./test_output` (or choose a new `--out` path) before running fresh tests to avoid confusing previous outputs with new ones.
+
+## Bug Fix (2025-02-15) - ZIP Only Contains Index Issue
+### Problem
+User reported that after running `python Scrape.py --out test_output --max-cases 12 --query-ieo-only`, the generated ZIP file only contained the index files (CSV/XLSX) and no PDF documents.
+
+### Root Cause
+The `download_documents()` function had a bug in its exception handler. When a download failed:
+- The exception was caught and a warning was printed to stderr
+- The record's `local_path` was set to an empty string
+- **BUT** the record was NOT appended to the `downloaded` list
+
+This meant:
+- If ALL downloads failed (e.g., network issues, permission errors), the `downloaded` list would be empty
+- The DataFrame/manifest would be empty or nearly empty
+- The ZIP would only contain the index files with no PDFs
+
+### Fix Applied
+Modified the exception handler in `download_documents()` (line 252) to append failed download records to the `downloaded` list:
+```python
+except Exception as exc:
+    record["local_path"] = ""
+    downloaded.append(record)  # <- Added this line
+    print(f"[warn] download failed {url}: {exc}", file=sys.stderr)
+```
+
+### Benefits
+1. **Failed downloads are now tracked** in the manifest/index so users can see what was supposed to be downloaded
+2. **Better visibility** - users can identify which documents failed and investigate why
+3. **Manifest completeness** - the CSV/XLSX index shows all discovered documents, not just successful downloads
+4. **ZIP behavior unchanged** - failed downloads (with empty `local_path`) are still excluded from the ZIP via existing checks
+
+### Testing
+Verified with simulated scenarios:
+- All downloads succeed → all PDFs in ZIP ✓
+- Some downloads fail → successful PDFs in ZIP, failed ones in manifest only ✓
+- All downloads fail → ZIP has index only, but manifest shows all attempted downloads ✓
+## Run Log (2025-10-07)
+- Added dedicated classification buckets for Hold separate manager, Monitoring trustee, Commencement notice, and Decision documents so they materialise as separate folders in both the on-disk layout and the ZIP bundle.
+- Installed the optional `lxml` dependency to eliminate BeautifulSoup parser warnings and re-ran `python Scrape.py --out ./test_output --max-cases 12 --query-ieo-only` on a clean output directory.
+- Zip bundle now includes the new category folders with the downloaded PDFs alongside the refreshed CSV/XLSX manifest.
+- Restricted IEO-only search to the exact phrase "initial enforcement order" and validated with `python3 Scrape.py --out ./ieo_output --query-ieo-only`.
+- Added `--only-derogations` flag and verified `python3 Scrape.py --out ./ieo_derogs_output --query-ieo-only --only-derogations` produces an index/ZIP containing only derogation PDFs.
+
+## Run Log (2025-10-08)
+- Introduced `--all-merger-cases-with-outcomes` to drive discovery from the GOV.UK finder using the full set of merger outcome filters, and added `--only-full-text-decisions` to restrict downloads to "Full text decision" PDFs.
+- Confirmed per-row `not_downloaded` flags are populated in the index so missed documents are easy to audit.
+- Ran `python3 Scrape.py --out ./fulltext_decisions_outcomes --all-merger-cases-with-outcomes --only-full-text-decisions` to exercise the new mode across the full dataset (≈1.8k decision PDFs).
+- Smoke-tested with `python3 Scrape.py --out ./smoke_fulltext --all-merger-cases-with-outcomes --only-full-text-decisions --max-cases 3` to ensure small-batch operation still succeeds.
+- Verified manifest-only workflows by running `python3 Scrape.py --out ./fulltext_log --all-merger-cases-with-outcomes --only-full-text-decisions --skip-downloads` (646 decision entries across 1,878 cases) and `python3 Scrape.py --out ./all_docs_log --all-merger-cases-with-outcomes --skip-downloads` (7,441 documents total) to support gap analysis without downloading PDFs.
+
+## Run Log (2025-10-07)
+- Added dedicated classification buckets for Hold separate manager, Monitoring trustee, Commencement notice, and Decision documents so they materialise as separate folders in both the on-disk layout and the ZIP bundle.
+- Installed the optional `lxml` dependency to eliminate BeautifulSoup parser warnings and re-ran `python Scrape.py --out ./test_output --max-cases 12 --query-ieo-only` on a clean output directory.
+- Zip bundle now includes the new category folders with the downloaded PDFs alongside the refreshed CSV/XLSX manifest.
+- Restricted IEO-only search to the exact phrase "initial enforcement order" and validated with `python3 Scrape.py --out ./ieo_output --query-ieo-only`.
+- Added `--only-derogations` flag and verified `python3 Scrape.py --out ./ieo_derogs_output --query-ieo-only --only-derogations` produces an index/ZIP containing only derogation PDFs.
+
+## Run Log (2025-10-08)
+- Introduced `--all-merger-cases-with-outcomes` to drive discovery from the GOV.UK finder using the full set of merger outcome filters, and added `--only-full-text-decisions` to restrict downloads to "Full text decision" PDFs.
+- Confirmed per-row `not_downloaded` flags are populated in the index so missed documents are easy to audit.
+- Ran `python3 Scrape.py --out ./fulltext_decisions_outcomes --all-merger-cases-with-outcomes --only-full-text-decisions` to exercise the new mode across the full dataset (≈1.8k decision PDFs).
+- Smoke-tested with `python3 Scrape.py --out ./smoke_fulltext --all-merger-cases-with-outcomes --only-full-text-decisions --max-cases 3` to ensure small-batch operation still succeeds.
+
+## Current Status Overview
+- The reworked `Scrape.py` now derives a slugged merger name for every case, writes PDFs into `output/<merger>/IEOs|Derrogations|Revocations|Hold separate manager|Monitoring trustee|Commencement notice|Decision|Other/`, and produces a manifest + zip bundle that matches the requested delivery structure.
+- **Fixed (2025-02-15)**: Corrected bug where failed downloads were not tracked, causing ZIP to only contain index when all downloads failed. Now failed downloads appear in the manifest for visibility.
+- Added `--only-derogations` flag to keep output focused on derogation documents when desired.
+- Added `--only-full-text-decisions` flag plus an outcome-filtered case discovery mode to capture every published full text decision.
+- Added `--skip-downloads` flag so large manifest/log runs can be produced without fetching any documents.
+- Follow-up work should focus on improving robustness (retry/back-off) and documenting environment prerequisites for reproducible runs.
+
